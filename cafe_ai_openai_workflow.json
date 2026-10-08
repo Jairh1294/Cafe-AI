@@ -1,0 +1,428 @@
+{
+  "name": "CAFE AI — Plantilla — OpenAI Function Calling + WhatsApp + n8n",
+  "nodes": [
+    {
+      "parameters": { "httpMethod": "POST", "path": "cafe/whatsapp/entrante", "responseMode": "responseNode", "options": {} },
+      "id": "n01", "name": "WHATSAPP — Entrante", "type": "n8n-nodes-base.webhook", "typeVersion": 2.1,
+      "position": [-2400, 400], "webhookId": "n01-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $json.body ?? $json;\nconst m = b.messages?.[0] ?? b.message ?? b;\nconst c = b.contacts?.[0] ?? {};\nreturn [{ json: {\n  telefono: m.from ?? b.from ?? b.phone ?? \"\",\n  nombre: c.profile?.name ?? b.name ?? \"\",\n  texto: m.text?.body ?? m.text ?? b.text ?? \"\",\n  raw: b\n} }];"
+      },
+      "id": "n02", "name": "Normalizar WhatsApp", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-2176, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nconst promptSistema = `Eres el asistente de WhatsApp de la cafetería. Responde siempre en español, de forma breve, cálida y profesional.\\nPuedes usar herramientas para: verificar disponibilidad de mesas, crear una reserva, consultar el menú, crear un pedido (cotización + enlace de pago), consultar el estado de un pedido y registrar el feedback del cliente.\\nSi te falta un dato imprescindible (fecha, hora, número de personas, artículos, ID de pedido, calificación), pregúntalo antes de llamar a la herramienta.\\nNunca inventes disponibilidad, precios, artículos del menú ni el estado de un pedido: esa información solo puede venir de las herramientas.`;\nreturn [{ json: {\n  telefono: d.telefono,\n  nombre: d.nombre,\n  texto: d.texto,\n  mensajes: [\n    { role: \"system\", content: promptSistema },\n    { role: \"user\", content: d.texto || \"\" }\n  ]\n} }];"
+      },
+      "id": "n03", "name": "Construir Mensajes", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-1952, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{'Bearer ' + ($env.OPENAI_API_KEY || 'REEMPLAZAR_OPENAI_API_KEY')}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({\n  model: $env.OPENAI_MODEL || 'gpt-4o-mini',\n  messages: $json.mensajes,\n  tool_choice: 'auto',\n  tools: [\n    { type: 'function', function: { name: 'verificar_disponibilidad', description: 'Verifica si hay mesas disponibles para una fecha, hora y número de personas.', parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'YYYY-MM-DD' }, hora: { type: 'string', description: 'HH:MM' }, personas: { type: 'integer' } }, required: ['fecha','hora','personas'] } } },\n    { type: 'function', function: { name: 'crear_reserva', description: 'Crea una reserva de mesa después de confirmar disponibilidad.', parameters: { type: 'object', properties: { fecha: { type: 'string' }, hora: { type: 'string' }, personas: { type: 'integer' } }, required: ['fecha','hora','personas'] } } },\n    { type: 'function', function: { name: 'consultar_menu', description: 'Obtiene el menú actual de la cafetería con categorías, artículos y precios.', parameters: { type: 'object', properties: {} } } },\n    { type: 'function', function: { name: 'crear_pedido', description: 'Cotiza un pedido a partir de los artículos solicitados y genera un enlace de pago.', parameters: { type: 'object', properties: { items: { type: 'array', description: 'Artículos del pedido', items: { type: 'object', properties: { nombre: { type: 'string' }, cantidad: { type: 'integer' } }, required: ['nombre','cantidad'] } } }, required: ['items'] } } },\n    { type: 'function', function: { name: 'consultar_estado_pedido', description: 'Consulta el estado actual de un pedido por su ID.', parameters: { type: 'object', properties: { pedido_id: { type: 'string' } }, required: ['pedido_id'] } } },\n    { type: 'function', function: { name: 'registrar_feedback', description: 'Guarda la calificación y el comentario del cliente sobre su experiencia.', parameters: { type: 'object', properties: { calificacion: { type: 'integer', description: '1 a 5' }, comentario: { type: 'string' } }, required: ['calificacion'] } } }\n  ]\n})}}",
+        "options": {}
+      },
+      "id": "n04", "name": "OpenAI — Primera Llamada", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-1728, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $json.choices?.[0]?.message ?? {};\nconst toolCalls = msg.tool_calls;\nif (Array.isArray(toolCalls) && toolCalls.length > 0) {\n  return [{ json: {\n    tiene_herramienta: true,\n    mensaje_asistente: msg,\n    tool_call: toolCalls[0]\n  } }];\n}\nreturn [{ json: {\n  tiene_herramienta: false,\n  respuesta: msg.content || 'Disculpa, ¿podrías repetirlo?'\n} }];"
+      },
+      "id": "n05", "name": "Extraer Decisión IA", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-1504, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            { "leftValue": "={{$json.tiene_herramienta}}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n06", "name": "¿Requiere Herramienta?", "type": "n8n-nodes-base.if", "typeVersion": 2,
+      "position": [-1280, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const tc = $json.tool_call;\nlet args = {};\ntry { args = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}\nreturn [{ json: {\n  nombre_funcion: tc.function.name,\n  argumentos: args,\n  tool_call_id: tc.id\n} }];"
+      },
+      "id": "n07", "name": "Preparar Llamada Herramienta", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-1056, 208]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.nombre_funcion}}", "rightValue": "verificar_disponibilidad", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "verificar_disponibilidad" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.nombre_funcion}}", "rightValue": "crear_reserva", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "crear_reserva" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.nombre_funcion}}", "rightValue": "consultar_menu", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "consultar_menu" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.nombre_funcion}}", "rightValue": "crear_pedido", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "crear_pedido" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.nombre_funcion}}", "rightValue": "consultar_estado_pedido", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "consultar_estado_pedido" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.nombre_funcion}}", "rightValue": "registrar_feedback", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "registrar_feedback" }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "n08", "name": "Enrutador de Herramienta", "type": "n8n-nodes-base.switch", "typeVersion": 3.2,
+      "position": [-832, 208]
+    },
+    {
+      "parameters": {
+        "url": "={{($env.CAFE_API_BASE_URL || 'https://TU-API-CAFE.ejemplo.com') + '/mesas/disponibilidad'}}",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [
+          { "name": "fecha", "value": "={{$json.argumentos.fecha || ''}}" },
+          { "name": "hora", "value": "={{$json.argumentos.hora || ''}}" },
+          { "name": "personas", "value": "={{$json.argumentos.personas || 2}}" }
+        ] },
+        "options": {}
+      },
+      "id": "n09", "name": "Herramienta — Verificar Disponibilidad", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-608, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $json;\nconst resultado = { disponible: r.available ?? r.disponible ?? true, alternativas: r.alternatives ?? r.alternativas ?? [] };\nreturn [{ json: {\n  tool_call_id: $('Preparar Llamada Herramienta').item.json.tool_call_id,\n  contenido: JSON.stringify(resultado)\n} }];"
+      },
+      "id": "n10", "name": "Formatear — Disponibilidad", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-384, -80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.CAFE_API_BASE_URL || 'https://TU-API-CAFE.ejemplo.com') + '/reservaciones'}}",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({\n  telefono: $('Normalizar WhatsApp').item.json.telefono,\n  nombre: $('Normalizar WhatsApp').item.json.nombre,\n  fecha: $json.argumentos.fecha,\n  hora: $json.argumentos.hora,\n  personas: $json.argumentos.personas\n})}}",
+        "options": {}
+      },
+      "id": "n11", "name": "Herramienta — Crear Reserva", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-608, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $json;\nconst resultado = { exito: true, reservacion_id: r.id ?? r.reservation_id ?? 'PENDIENTE', fecha: $('Preparar Llamada Herramienta').item.json.argumentos.fecha, hora: $('Preparar Llamada Herramienta').item.json.argumentos.hora, personas: $('Preparar Llamada Herramienta').item.json.argumentos.personas };\nreturn [{ json: {\n  tool_call_id: $('Preparar Llamada Herramienta').item.json.tool_call_id,\n  contenido: JSON.stringify(resultado)\n} }];"
+      },
+      "id": "n12", "name": "Formatear — Reserva", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-384, 80]
+    },
+    {
+      "parameters": {
+        "url": "={{($env.CAFE_API_BASE_URL || 'https://TU-API-CAFE.ejemplo.com') + '/menu'}}",
+        "options": {}
+      },
+      "id": "n13", "name": "Herramienta — Consultar Menú", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-608, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: {\n  tool_call_id: $('Preparar Llamada Herramienta').item.json.tool_call_id,\n  contenido: JSON.stringify($json)\n} }];"
+      },
+      "id": "n14", "name": "Formatear — Menú", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-384, 240]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.CAFE_API_BASE_URL || 'https://TU-API-CAFE.ejemplo.com') + '/pedidos/cotizar'}}",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({\n  telefono: $('Normalizar WhatsApp').item.json.telefono,\n  items: $json.argumentos.items || [],\n  origen: 'whatsapp'\n})}}",
+        "options": {}
+      },
+      "id": "n15", "name": "Herramienta — Cotizar Pedido", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-608, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.PAYMENT_CREATE_URL || 'https://TU-SERVICIO-DE-PAGO.ejemplo.com/crear'}}",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({ monto: $json.total || $json.amount, telefono: $('Normalizar WhatsApp').item.json.telefono })}}",
+        "options": {}
+      },
+      "id": "n16", "name": "Herramienta — Generar Enlace de Pago", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-384, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cot = $('Herramienta — Cotizar Pedido').item.json;\nconst pago = $json;\nconst resultado = {\n  total: cot.total ?? cot.amount ?? 0,\n  moneda: cot.currency ?? 'MXN',\n  enlace_pago: pago.payment_url ?? pago.url ?? 'ENLACE_NO_DISPONIBLE'\n};\nreturn [{ json: {\n  tool_call_id: $('Preparar Llamada Herramienta').item.json.tool_call_id,\n  contenido: JSON.stringify(resultado)\n} }];"
+      },
+      "id": "n17", "name": "Formatear — Pedido", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-160, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{($env.CAFE_API_BASE_URL || 'https://TU-API-CAFE.ejemplo.com') + '/pedidos/' + ($json.argumentos.pedido_id || '')}}",
+        "options": {}
+      },
+      "id": "n18", "name": "Herramienta — Consultar Estado de Pedido", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-608, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $json;\nconst resultado = { pedido_id: r.order_id ?? r.pedido_id ?? $('Preparar Llamada Herramienta').item.json.argumentos.pedido_id, estado: r.status ?? r.estado ?? 'desconocido', eta_minutos: r.eta_minutes ?? r.eta_minutos ?? null };\nreturn [{ json: {\n  tool_call_id: $('Preparar Llamada Herramienta').item.json.tool_call_id,\n  contenido: JSON.stringify(resultado)\n} }];"
+      },
+      "id": "n19", "name": "Formatear — Estado de Pedido", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-384, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.CAFE_API_BASE_URL || 'https://TU-API-CAFE.ejemplo.com') + '/feedback'}}",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({\n  telefono: $('Normalizar WhatsApp').item.json.telefono,\n  calificacion: $json.argumentos.calificacion,\n  comentario: $json.argumentos.comentario || '',\n  origen: 'whatsapp'\n})}}",
+        "options": {}
+      },
+      "id": "n20", "name": "Herramienta — Registrar Feedback", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-608, 720]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.MANAGER_ALERT_WEBHOOK || 'https://TU-N8N.ejemplo.com/webhook/cafe/alerta-gerente'}}",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({ telefono: $('Normalizar WhatsApp').item.json.telefono, calificacion: $('Preparar Llamada Herramienta').item.json.argumentos.calificacion, comentario: $('Preparar Llamada Herramienta').item.json.argumentos.comentario || '' })}}",
+        "options": {}
+      },
+      "id": "n21", "name": "Alertar al Gerente (si calificación baja)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-384, 800]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resultado = { guardado: true };\nreturn [{ json: {\n  tool_call_id: $('Preparar Llamada Herramienta').item.json.tool_call_id,\n  contenido: JSON.stringify(resultado)\n} }];"
+      },
+      "id": "n22", "name": "Formatear — Feedback", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-384, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resultado = { error: 'Herramienta no reconocida por el sistema.' };\nreturn [{ json: {\n  tool_call_id: $('Preparar Llamada Herramienta').item.json.tool_call_id,\n  contenido: JSON.stringify(resultado)\n} }];"
+      },
+      "id": "n23", "name": "Formatear — Herramienta Desconocida", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-384, 920]
+    },
+    {
+      "parameters": {
+        "jsCode": "const historial = $('Construir Mensajes').item.json.mensajes;\nconst asistente = $('Extraer Decisión IA').item.json.mensaje_asistente;\nconst resultado = $json;\nconst mensajes = [\n  ...historial,\n  asistente,\n  { role: 'tool', tool_call_id: resultado.tool_call_id, content: resultado.contenido }\n];\nreturn [{ json: { mensajes } }];"
+      },
+      "id": "n24", "name": "Ensamblar Mensajes con Resultado", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [80, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "={{'Bearer ' + ($env.OPENAI_API_KEY || 'REEMPLAZAR_OPENAI_API_KEY')}}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({ model: $env.OPENAI_MODEL || 'gpt-4o-mini', messages: $json.mensajes, tool_choice: 'none' })}}",
+        "options": {}
+      },
+      "id": "n25", "name": "OpenAI — Segunda Llamada (respuesta final)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [304, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const contenido = $json.choices?.[0]?.message?.content ?? 'Listo, ¿algo más en lo que te pueda ayudar?';\nreturn [{ json: { respuesta: contenido } }];"
+      },
+      "id": "n26", "name": "Extraer Respuesta Final", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [528, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.WHATSAPP_SEND_URL || 'https://graph.facebook.com/vXX.X/TU_ID_DE_TELEFONO/messages'}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "={{'Bearer ' + ($env.WHATSAPP_TOKEN || 'REEMPLAZAR_TOKEN_WHATSAPP')}}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({\n  messaging_product: 'whatsapp',\n  to: $('Normalizar WhatsApp').item.json.telefono,\n  type: 'text',\n  text: { body: $json.respuesta || 'Gracias por escribirnos, ¿en qué puedo ayudarte?' }\n})}}",
+        "options": {}
+      },
+      "id": "n27", "name": "Enviar WhatsApp", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [752, 460]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{JSON.stringify({ok:true})}}", "options": {} },
+      "id": "n28", "name": "WhatsApp — Responder 200", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.4,
+      "position": [976, 460]
+    },
+    {
+      "parameters": { "httpMethod": "POST", "path": "cafe/pago/webhook", "responseMode": "responseNode", "options": {} },
+      "id": "n29", "name": "PAGO — Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2.1,
+      "position": [-2400, 1200], "webhookId": "n29-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $json.body ?? $json;\nreturn [{ json: {\n  pago_id: b.payment_id ?? b.id ?? \"\",\n  pedido_id: b.order_id ?? b.notes?.order_id ?? \"\",\n  estado: b.status ?? b.payment_status ?? \"\",\n  monto: b.amount ?? 0,\n  telefono: b.phone ?? b.contact ?? \"\"\n} }];"
+      },
+      "id": "n30", "name": "Pago — Normalizar", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-2176, 1200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.CAFE_API_BASE_URL || 'https://TU-API-CAFE.ejemplo.com') + '/pedidos/pago-confirmado'}}",
+        "sendBody": true, "specifyBody": "json", "jsonBody": "={{JSON.stringify($json)}}",
+        "options": {}
+      },
+      "id": "n31", "name": "Pago — Confirmar Pedido", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-1952, 1200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.KITCHEN_WEBHOOK || 'https://TU-N8N.ejemplo.com/webhook/cafe/cocina'}}",
+        "sendBody": true, "specifyBody": "json", "jsonBody": "={{JSON.stringify($json)}}",
+        "options": {}
+      },
+      "id": "n32", "name": "Pago — Notificar Cocina", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-1728, 1200]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{JSON.stringify({ok:true})}}", "options": {} },
+      "id": "n33", "name": "Pago — Responder", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.4,
+      "position": [-1504, 1200]
+    },
+    {
+      "parameters": { "httpMethod": "POST", "path": "cafe/pedido/completado", "responseMode": "responseNode", "options": {} },
+      "id": "n34", "name": "PEDIDO COMPLETADO — Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2.1,
+      "position": [-2400, 1408], "webhookId": "n34-webhook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.WHATSAPP_SEND_URL || 'https://graph.facebook.com/vXX.X/TU_ID_DE_TELEFONO/messages'}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "={{'Bearer ' + ($env.WHATSAPP_TOKEN || 'REEMPLAZAR_TOKEN_WHATSAPP')}}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({ messaging_product: 'whatsapp', to: (($json.body ?? $json).phone || ''), type: 'text', text: { body: '¡Gracias por tu visita! ☕ Califica tu experiencia del 1 al 5 y cuéntanos si tienes algún comentario.' } })}}",
+        "options": {}
+      },
+      "id": "n35", "name": "Pedido Completado — WhatsApp Feedback", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-2176, 1408]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{JSON.stringify({ok:true})}}", "options": {} },
+      "id": "n36", "name": "Pedido Completado — Responder", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.4,
+      "position": [-1952, 1408]
+    },
+    {
+      "parameters": { "rule": { "interval": [{ "field": "cronExpression", "expression": "0 10 * * *" }] } },
+      "id": "n37", "name": "Retención Diaria — Disparador", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2,
+      "position": [-2400, 1616]
+    },
+    {
+      "parameters": {
+        "url": "={{($env.CAFE_API_BASE_URL || 'https://TU-API-CAFE.ejemplo.com') + '/clientes/inactivos?dias=30'}}",
+        "options": {}
+      },
+      "id": "n38", "name": "Retención — Obtener Inactivos", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-2176, 1616]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.WHATSAPP_SEND_URL || 'https://graph.facebook.com/vXX.X/TU_ID_DE_TELEFONO/messages'}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "={{'Bearer ' + ($env.WHATSAPP_TOKEN || 'REEMPLAZAR_TOKEN_WHATSAPP')}}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({\n  messaging_product: 'whatsapp',\n  to: $json.phone,\n  type: 'text',\n  text: { body: '¡Hola ' + ($json.name || 'de nuevo') + '! Te extrañamos ☕ Responde SI para ver una oferta especial. Responde ALTO para dejar de recibir mensajes.' }\n})}}",
+        "options": {}
+      },
+      "id": "n39", "name": "Retención — Campaña", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-1952, 1616]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "WHATSAPP — Entrante": { "main": [[{ "node": "Normalizar WhatsApp", "type": "main", "index": 0 }]] },
+    "Normalizar WhatsApp": { "main": [[{ "node": "Construir Mensajes", "type": "main", "index": 0 }]] },
+    "Construir Mensajes": { "main": [[{ "node": "OpenAI — Primera Llamada", "type": "main", "index": 0 }]] },
+    "OpenAI — Primera Llamada": { "main": [[{ "node": "Extraer Decisión IA", "type": "main", "index": 0 }]] },
+    "Extraer Decisión IA": { "main": [[{ "node": "¿Requiere Herramienta?", "type": "main", "index": 0 }]] },
+    "¿Requiere Herramienta?": {
+      "main": [
+        [{ "node": "Preparar Llamada Herramienta", "type": "main", "index": 0 }],
+        [{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]
+      ]
+    },
+    "Preparar Llamada Herramienta": { "main": [[{ "node": "Enrutador de Herramienta", "type": "main", "index": 0 }]] },
+    "Enrutador de Herramienta": {
+      "main": [
+        [{ "node": "Herramienta — Verificar Disponibilidad", "type": "main", "index": 0 }],
+        [{ "node": "Herramienta — Crear Reserva", "type": "main", "index": 0 }],
+        [{ "node": "Herramienta — Consultar Menú", "type": "main", "index": 0 }],
+        [{ "node": "Herramienta — Cotizar Pedido", "type": "main", "index": 0 }],
+        [{ "node": "Herramienta — Consultar Estado de Pedido", "type": "main", "index": 0 }],
+        [{ "node": "Herramienta — Registrar Feedback", "type": "main", "index": 0 }],
+        [{ "node": "Formatear — Herramienta Desconocida", "type": "main", "index": 0 }]
+      ]
+    },
+    "Herramienta — Verificar Disponibilidad": { "main": [[{ "node": "Formatear — Disponibilidad", "type": "main", "index": 0 }]] },
+    "Herramienta — Crear Reserva": { "main": [[{ "node": "Formatear — Reserva", "type": "main", "index": 0 }]] },
+    "Herramienta — Consultar Menú": { "main": [[{ "node": "Formatear — Menú", "type": "main", "index": 0 }]] },
+    "Herramienta — Cotizar Pedido": { "main": [[{ "node": "Herramienta — Generar Enlace de Pago", "type": "main", "index": 0 }]] },
+    "Herramienta — Generar Enlace de Pago": { "main": [[{ "node": "Formatear — Pedido", "type": "main", "index": 0 }]] },
+    "Herramienta — Consultar Estado de Pedido": { "main": [[{ "node": "Formatear — Estado de Pedido", "type": "main", "index": 0 }]] },
+    "Herramienta — Registrar Feedback": {
+      "main": [[
+        { "node": "Alertar al Gerente (si calificación baja)", "type": "main", "index": 0 },
+        { "node": "Formatear — Feedback", "type": "main", "index": 0 }
+      ]]
+    },
+    "Formatear — Disponibilidad": { "main": [[{ "node": "Ensamblar Mensajes con Resultado", "type": "main", "index": 0 }]] },
+    "Formatear — Reserva": { "main": [[{ "node": "Ensamblar Mensajes con Resultado", "type": "main", "index": 0 }]] },
+    "Formatear — Menú": { "main": [[{ "node": "Ensamblar Mensajes con Resultado", "type": "main", "index": 0 }]] },
+    "Formatear — Pedido": { "main": [[{ "node": "Ensamblar Mensajes con Resultado", "type": "main", "index": 0 }]] },
+    "Formatear — Estado de Pedido": { "main": [[{ "node": "Ensamblar Mensajes con Resultado", "type": "main", "index": 0 }]] },
+    "Formatear — Feedback": { "main": [[{ "node": "Ensamblar Mensajes con Resultado", "type": "main", "index": 0 }]] },
+    "Formatear — Herramienta Desconocida": { "main": [[{ "node": "Ensamblar Mensajes con Resultado", "type": "main", "index": 0 }]] },
+    "Ensamblar Mensajes con Resultado": { "main": [[{ "node": "OpenAI — Segunda Llamada (respuesta final)", "type": "main", "index": 0 }]] },
+    "OpenAI — Segunda Llamada (respuesta final)": { "main": [[{ "node": "Extraer Respuesta Final", "type": "main", "index": 0 }]] },
+    "Extraer Respuesta Final": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "Enviar WhatsApp": { "main": [[{ "node": "WhatsApp — Responder 200", "type": "main", "index": 0 }]] },
+    "PAGO — Webhook": { "main": [[{ "node": "Pago — Normalizar", "type": "main", "index": 0 }]] },
+    "Pago — Normalizar": { "main": [[{ "node": "Pago — Confirmar Pedido", "type": "main", "index": 0 }]] },
+    "Pago — Confirmar Pedido": { "main": [[{ "node": "Pago — Notificar Cocina", "type": "main", "index": 0 }]] },
+    "Pago — Notificar Cocina": { "main": [[{ "node": "Pago — Responder", "type": "main", "index": 0 }]] },
+    "PEDIDO COMPLETADO — Webhook": { "main": [[{ "node": "Pedido Completado — WhatsApp Feedback", "type": "main", "index": 0 }]] },
+    "Pedido Completado — WhatsApp Feedback": { "main": [[{ "node": "Pedido Completado — Responder", "type": "main", "index": 0 }]] },
+    "Retención Diaria — Disparador": { "main": [[{ "node": "Retención — Obtener Inactivos", "type": "main", "index": 0 }]] },
+    "Retención — Obtener Inactivos": { "main": [[{ "node": "Retención — Campaña", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "binaryMode": "separate", "availableInMCP": false },
+  "versionId": "c0000000-0000-0000-0000-000000000001",
+  "meta": { "instanceId": "cafe-ai-openai-tools-es-template" },
+  "id": "CafeAIOpenAIToolsEspanol",
+  "tags": []
+}
